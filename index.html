@@ -627,13 +627,19 @@ Version 56:
 - The Past due filter now shows reminders dated before today, rather than reminders from earlier the same day.
 - This preserves the intended calendar-day meaning of the Today filter while keeping label filtering unchanged.
 
+Version 57:
+- Changed backup export from .json to .txt while keeping the backup contents as valid JSON text.
+- Backup import now accepts both .txt and .json backup files.
+- Added a visible export confirmation showing the backup filename and explaining that the app creates a local device download rather than uploading the backup to GitHub or any server.
+- Clarified the backup help text so users know to check the Files app Downloads folder on iPhone, while recognising that Safari controls the final download location.
+
 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>My Reminders v56</title>
+  <title>My Reminders v57</title>
   <style>
     :root {
       --bg: #f7f7f8;
@@ -1479,13 +1485,15 @@ Version 56:
       <summary>Backup and restore</summary>
       <div class="panel">
         <p class="note">
-          Reminders are stored only in this browser on this device. Export a backup before clearing browser data or switching devices.
+          App data is stored only in this browser on this device. Export a backup before clearing browser data or switching devices.
+          Backups are downloaded by your browser; the app does not upload them to GitHub or any server.
         </p>
         <div class="actions">
           <button type="button" class="secondary" id="exportBtn">Export backup</button>
           <button type="button" class="secondary" id="importBtn">Import backup</button>
         </div>
-        <input id="importFile" class="hidden" type="file" accept="application/json,.json" />
+        <p class="note hidden" id="exportStatus" aria-live="polite"></p>
+        <input id="importFile" class="hidden" type="file" accept="text/plain,application/json,.txt,.json" />
       </div>
     </details>
   </div>
@@ -1581,6 +1589,7 @@ Version 56:
       var qaLabelFilter = document.getElementById("qaLabelFilter");
       var columnsLabelFilter = document.getElementById("columnsLabelFilter");
       var exportBtn = document.getElementById("exportBtn");
+      var exportStatus = document.getElementById("exportStatus");
       var importBtn = document.getElementById("importBtn");
       var importFile = document.getElementById("importFile");
       var toast = document.getElementById("toast");
@@ -3207,6 +3216,13 @@ Version 56:
         return year + "-" + month + "-" + day + "_" + hour + "-" + minute + "-" + second;
       }
 
+      function showExportStatus(filename) {
+        if (!exportStatus) return;
+
+        exportStatus.textContent = "Backup exported as " + filename + ". This app created a local browser download and did not upload the backup to GitHub or any server. On iPhone, check Files → Downloads. Safari controls the final save location.";
+        exportStatus.classList.remove("hidden");
+      }
+
       function closeMenus() {
         document.querySelectorAll(".menu").forEach(function (menu) {
           menu.classList.add("hidden");
@@ -3556,16 +3572,19 @@ Version 56:
 
       exportBtn.addEventListener("click", function () {
         var backup = buildAppData();
+        var filename = "reminders-backup-" + safeFileDateTime() + ".txt";
 
-        var blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+        var blob = new Blob([JSON.stringify(backup, null, 2)], { type: "text/plain" });
         var url = URL.createObjectURL(blob);
         var link = document.createElement("a");
         link.href = url;
-        link.download = "reminders-backup-" + safeFileDateTime() + ".json";
+        link.download = filename;
         document.body.appendChild(link);
         link.click();
         link.remove();
         URL.revokeObjectURL(url);
+
+        showExportStatus(filename);
       });
 
       importBtn.addEventListener("click", function () {
