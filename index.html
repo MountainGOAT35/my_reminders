@@ -639,13 +639,24 @@ Version 58:
 - Added a copyable backup text panel so users can manually save backup text if iPhone Safari does not place generated downloads in Files.
 - Updated backup guidance to avoid promising a specific download folder, because Safari and the user's device settings control the final save location.
 
+Version 59:
+- Added reminder owner/source support so reminders can be grouped separately from topic labels.
+- Existing reminders without an owner now behave as Mine for display, filtering, export, and future saves.
+- Added an Owner/source field to the reminder form, with remembered owner suggestions based on existing reminders.
+- Added reminder owner checkbox filters so users can show or hide Mine, Shared, partner/imported, or custom owner sets.
+- Reminder cards now display their owner/source separately from their topic label.
+- Added an Export handle field to Backup and restore; the handle is included in backup metadata but the backup is still created locally in the browser.
+- When importing reminders from a backup that includes an export handle, imported reminders are assigned to that handle as their owner/source.
+- Older backups without an export handle ask for an owner/source name during import.
+- Backup schema version is now 4, while older backups and saved data remain compatible.
+
 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>My Reminders v58</title>
+  <title>My Reminders v59</title>
   <style>
     :root {
       --bg: #f7f7f8;
@@ -821,6 +832,32 @@ Version 58:
       padding: 10px;
       background: #fff;
       color: var(--text);
+    }
+
+    .owner-filter-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .owner-filter-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: #fff;
+      color: var(--text);
+      font-size: 0.9rem;
+      font-weight: 650;
+    }
+
+    .owner-filter-option input {
+      width: auto;
+      min-height: auto;
     }
 
     .list {
@@ -1272,6 +1309,9 @@ Version 58:
         <label for="labelInput">Label</label>
         <input id="labelInput" list="labelOptionsReminderNote" placeholder="Optional label, e.g. Work" autocomplete="off" />
 
+        <label for="ownerInput">Owner/source</label>
+        <input id="ownerInput" list="ownerOptions" placeholder="Mine" autocomplete="off" />
+
         <div class="form-grid">
           <div>
             <label for="dateInput">Date</label>
@@ -1344,6 +1384,11 @@ Version 58:
     <div class="label-filter-row">
       <label for="reminderLabelFilter">Filter reminders by label</label>
       <select id="reminderLabelFilter" aria-label="Filter reminders by label"></select>
+    </div>
+
+    <div class="label-filter-row">
+      <label>Show reminder owners/sources</label>
+      <div id="ownerFilterList" class="owner-filter-list" aria-label="Show reminder owners or sources"></div>
     </div>
 
     <main id="list" class="list" aria-live="polite"></main>
@@ -1502,6 +1547,14 @@ Version 58:
           The app creates backup files locally in your browser and does not upload them to GitHub or any server.
           On iPhone, use Save/share backup if normal downloads do not appear in Files.
         </p>
+
+        <label for="exportHandleInput">Export handle</label>
+        <input id="exportHandleInput" placeholder="Optional, e.g. John" autocomplete="off" />
+        <p class="note">
+          This handle is included in exported backups so another device can group imported reminders by source.
+          It is not an account, login, or cloud sync feature.
+        </p>
+
         <div class="actions">
           <button type="button" class="secondary" id="exportBtn">Download backup file</button>
           <button type="button" class="secondary" id="shareBackupBtn">Save/share backup file</button>
@@ -1530,6 +1583,7 @@ Version 58:
   <datalist id="labelOptionsReminderNote"></datalist>
   <datalist id="labelOptionsQaCards"></datalist>
   <datalist id="labelOptionsColumnCards"></datalist>
+  <datalist id="ownerOptions"></datalist>
 
   <div id="toast" class="toast hidden">
     <span id="toastText"></span>
@@ -1542,6 +1596,7 @@ Version 58:
 
       // Permanent localStorage key. Keep this exact value in future versions so existing reminders keep loading.
       var STORAGE_KEY = "simpleReminderList.v1";
+      var EXPORT_HANDLE_KEY = "simpleReminderList.exportHandle.v1";
 
       // =====================================================
       // App state
@@ -1559,6 +1614,7 @@ Version 58:
         qaCards: "",
         columnCards: ""
       };
+      var reminderOwnerFilters = {};
       var editingId = null;
       var duplicatingId = null;
       var repeatingId = null;
@@ -1609,15 +1665,18 @@ Version 58:
       var cancelRepeatBtn = document.getElementById("cancelRepeatBtn");
       var textInput = document.getElementById("textInput");
       var labelInput = document.getElementById("labelInput");
+      var ownerInput = document.getElementById("ownerInput");
       var dateInput = document.getElementById("dateInput");
       var timeInput = document.getElementById("timeInput");
       var cancelBtn = document.getElementById("cancelBtn");
       var list = document.getElementById("list");
       var reminderLabelFilter = document.getElementById("reminderLabelFilter");
+      var ownerFilterList = document.getElementById("ownerFilterList");
       var noteLabelFilter = document.getElementById("noteLabelFilter");
       var qaLabelFilter = document.getElementById("qaLabelFilter");
       var columnsLabelFilter = document.getElementById("columnsLabelFilter");
       var exportBtn = document.getElementById("exportBtn");
+      var exportHandleInput = document.getElementById("exportHandleInput");
       var shareBackupBtn = document.getElementById("shareBackupBtn");
       var showBackupTextBtn = document.getElementById("showBackupTextBtn");
       var exportStatus = document.getElementById("exportStatus");
@@ -1676,13 +1735,14 @@ Version 58:
       var labelOptionsReminderNote = document.getElementById("labelOptionsReminderNote");
       var labelOptionsQaCards = document.getElementById("labelOptionsQaCards");
       var labelOptionsColumnCards = document.getElementById("labelOptionsColumnCards");
+      var ownerOptions = document.getElementById("ownerOptions");
 
       // =====================================================
       // Shared data loading, saving, import/export helpers
       // =====================================================
 
       var APP_NAME = "simpleReminderList";
-      var SCHEMA_VERSION = 3;
+      var SCHEMA_VERSION = 4;
 
       function emptyLabelCollections() {
         return {
@@ -1742,8 +1802,9 @@ Version 58:
           schemaVersion: SCHEMA_VERSION,
           savedAt: metadata.savedAt || new Date().toISOString(),
           exportedAt: metadata.exportedAt || undefined,
+          source: metadata.source || undefined,
           data: {
-            reminders: reminders,
+            reminders: normaliseReminderOwnerFields(reminders),
             notes: notes,
             qaCards: qaCards,
             columnCards: columnCards,
@@ -1756,6 +1817,11 @@ Version 58:
         if (appData.exportedAt === undefined) {
           delete appData.exportedAt;
         }
+
+        if (!appData.source || !appData.source.handle) {
+          delete appData.source;
+        }
+
         return appData;
       }
 
@@ -1770,11 +1836,12 @@ Version 58:
             columnCards = [];
             labels = emptyLabelCollections();
             updateLabelDatalists();
+            updateReminderOwnerFilters();
             return;
           }
 
           var collections = readAppCollections(JSON.parse(raw));
-          reminders = collections.reminders;
+          reminders = normaliseReminderOwnerFields(collections.reminders);
           notes = collections.notes;
           qaCards = collections.qaCards;
           columnCards = collections.columnCards;
@@ -1789,13 +1856,21 @@ Version 58:
           columnCards = [];
           labels = emptyLabelCollections();
           updateLabelDatalists();
+          updateReminderOwnerFilters();
           alert("Could not read saved data. Starting with empty lists.");
         }
       }
 
       function buildAppData() {
+        var exportedAt = new Date().toISOString();
+        var handle = currentExportHandle();
+
         return removeUndefinedAppDataFields(appDataFromCollections({
-          exportedAt: new Date().toISOString()
+          exportedAt: exportedAt,
+          source: handle ? {
+            handle: handle,
+            exportedAt: exportedAt
+          } : undefined
         }));
       }
 
@@ -1805,14 +1880,16 @@ Version 58:
         }
 
         var collections = readAppCollections(data);
+        var importOwner = ownerForImportedReminders(data, collections.reminders);
         mergeImportedLabelCollections(collections.labels);
-        var reminderSummary = mergeImportedReminders(collections.reminders);
+        var reminderSummary = mergeImportedReminders(collections.reminders, importOwner);
 
         mergeImportedNotes(collections.notes);
         mergeImportedQaCards(collections.qaCards);
         mergeImportedColumnCards(collections.columnCards);
         rememberLabelsFromCards();
         updateLabelDatalists();
+        updateReminderOwnerFilters();
 
         save();
         renderAllCards();
@@ -2085,6 +2162,164 @@ Version 58:
       }
 
       // =====================================================
+      // Reminder owner/source helpers
+      // =====================================================
+
+      function normaliseOwner(value) {
+        var owner = normaliseLabel(value);
+        return owner || "Mine";
+      }
+
+      function reminderOwner(reminder) {
+        return normaliseOwner(reminder && reminder.owner);
+      }
+
+      function reminderWithOwner(reminder) {
+        if (!reminder || typeof reminder !== "object") return reminder;
+
+        var output = Object.assign({}, reminder);
+        output.owner = reminderOwner(reminder);
+        return output;
+      }
+
+      function normaliseReminderOwnerFields(items) {
+        if (!Array.isArray(items)) return [];
+
+        return items.map(function (item) {
+          return reminderWithOwner(item);
+        });
+      }
+
+      function reminderOwnerList() {
+        var owners = [];
+        var seen = {};
+
+        reminders.forEach(function (reminder) {
+          var owner = reminderOwner(reminder);
+          var key = owner.toLowerCase();
+
+          if (seen[key]) return;
+
+          seen[key] = true;
+          owners.push(owner);
+        });
+
+        if (!owners.length) {
+          owners.push("Mine");
+        }
+
+        return owners.sort(function (a, b) {
+          if (a.toLowerCase() === "mine") return -1;
+          if (b.toLowerCase() === "mine") return 1;
+          return a.localeCompare(b, undefined, { sensitivity: "base" });
+        });
+      }
+
+      function ownerMatchesFilter(reminder) {
+        var owner = reminderOwner(reminder);
+
+        if (reminderOwnerFilters[owner] === false) {
+          return false;
+        }
+
+        return true;
+      }
+
+      function ownerMetaHtml(reminder) {
+        return '<div class="card-label">Owner/source: ' + escapeHtml(reminderOwner(reminder)) + '</div>';
+      }
+
+      function ownerFilterHtml(owners) {
+        return owners.map(function (owner) {
+          if (reminderOwnerFilters[owner] === undefined) {
+            reminderOwnerFilters[owner] = true;
+          }
+
+          return ''
+            + '<label class="owner-filter-option">'
+            + '  <input type="checkbox" value="' + escapeHtml(owner) + '" data-owner-filter ' + (reminderOwnerFilters[owner] === false ? '' : 'checked') + ' />'
+            + '  <span>' + escapeHtml(owner) + '</span>'
+            + '</label>';
+        }).join("");
+      }
+
+      function updateOwnerDatalist(owners) {
+        if (!ownerOptions) return;
+
+        ownerOptions.innerHTML = owners.map(function (owner) {
+          return '<option value="' + escapeHtml(owner) + '"></option>';
+        }).join("");
+      }
+
+      function updateReminderOwnerFilters() {
+        var owners = reminderOwnerList();
+
+        updateOwnerDatalist(owners);
+
+        if (!ownerFilterList) return;
+
+        ownerFilterList.innerHTML = ownerFilterHtml(owners);
+      }
+
+      function backupSourceHandle(source) {
+        if (!source || typeof source !== "object") return "";
+
+        if (source.source && typeof source.source === "object" && source.source.handle) {
+          return normaliseOwner(source.source.handle);
+        }
+
+        if (source.sharedBy) return normaliseOwner(source.sharedBy);
+        if (source.exportHandle) return normaliseOwner(source.exportHandle);
+
+        return "";
+      }
+
+      function ownerForImportedReminders(source, importedReminders) {
+        if (!Array.isArray(importedReminders) || importedReminders.length === 0) {
+          return "";
+        }
+
+        var handle = backupSourceHandle(source);
+
+        if (handle) {
+          return handle;
+        }
+
+        var chosen = prompt(
+          "This backup does not include an export handle.\n\nImport these reminders as which owner/source?",
+          "Imported"
+        );
+
+        if (chosen === null) {
+          throw new Error("Import cancelled.");
+        }
+
+        return normaliseOwner(chosen);
+      }
+
+      function currentExportHandle() {
+        return normaliseLabel(exportHandleInput ? exportHandleInput.value : "");
+      }
+
+      function loadExportHandle() {
+        if (!exportHandleInput) return;
+
+        exportHandleInput.value = normaliseLabel(localStorage.getItem(EXPORT_HANDLE_KEY));
+      }
+
+      function saveExportHandle() {
+        if (!exportHandleInput) return;
+
+        var handle = currentExportHandle();
+
+        if (handle) {
+          localStorage.setItem(EXPORT_HANDLE_KEY, handle);
+        } else {
+          localStorage.removeItem(EXPORT_HANDLE_KEY);
+        }
+      }
+
+      // =====================================================
       // Shared section/card rendering helpers
       // =====================================================
 
@@ -2161,7 +2396,9 @@ Version 58:
             else if (currentFilter === "archived") statusMatches = reminder.archived;
             else statusMatches = cat === currentFilter;
 
-            return statusMatches && labelMatchesFilter(reminder, currentLabelFilters.reminders);
+            return statusMatches
+              && labelMatchesFilter(reminder, currentLabelFilters.reminders)
+              && ownerMatchesFilter(reminder);
           })
           .sort(function (a, b) {
             return parseDateTime(a) - parseDateTime(b);
@@ -2750,6 +2987,7 @@ Version 58:
 
       function render() {
         closeMenus();
+        updateReminderOwnerFilters();
 
         var items = visibleReminders();
 
@@ -2784,6 +3022,7 @@ Version 58:
             + '      <div class="datetime">' + escapeHtml(formatDateTime(reminder)) + '</div>'
             + '      <div class="text">' + escapeHtml(reminder.text) + '</div>'
             + '      <div class="status">' + escapeHtml(categoryLabel(reminder) + archivedText + duplicateStatusText) + '</div>'
+            + ownerMetaHtml(reminder)
             + labelMetaHtml(reminder.label)
             + '    </div>'
             + '  </div>'
@@ -2963,12 +3202,14 @@ Version 58:
           formTitle.textContent = "Edit reminder";
           textInput.value = reminder.text;
           labelInput.value = normaliseLabel(reminder.label);
+          ownerInput.value = reminderOwner(reminder);
           dateInput.value = reminder.date;
           timeInput.value = reminder.time;
         } else {
           editingId = null;
           formTitle.textContent = "Add reminder";
           reminderForm.reset();
+          ownerInput.value = "Mine";
 
           var now = new Date();
           dateInput.value = now.toISOString().slice(0, 10);
@@ -3134,7 +3375,7 @@ Version 58:
         );
       }
 
-      function normaliseImportedReminder(item) {
+      function normaliseImportedReminder(item, ownerOverride) {
         var text = String(item && item.text ? item.text : "").trim();
         var date = item && item.date;
         var time = item && item.time;
@@ -3146,6 +3387,7 @@ Version 58:
           groupId: item.groupId,
           text: text,
           label: normaliseLabel(item.label),
+          owner: ownerOverride ? normaliseOwner(ownerOverride) : normaliseOwner(item.owner),
           date: date,
           time: time,
           archived: !!item.archived,
@@ -3188,12 +3430,13 @@ Version 58:
         });
       }
 
-      function mergeImportedReminders(importedItems) {
+      function mergeImportedReminders(importedItems, ownerOverride) {
         var summary = {
           added: 0,
           updated: 0,
           kept: 0,
-          invalid: 0
+          invalid: 0,
+          owner: ownerOverride || ""
         };
 
         var byId = {};
@@ -3202,7 +3445,7 @@ Version 58:
         });
 
         importedItems.forEach(function (item) {
-          var imported = normaliseImportedReminder(item);
+          var imported = normaliseImportedReminder(item, ownerOverride);
 
           if (!imported) {
             summary.invalid++;
@@ -3234,6 +3477,7 @@ Version 58:
 
       function importSummaryMessage(summary) {
         return "Backup imported.\n\n"
+          + (summary.owner ? "Reminder owner/source: " + summary.owner + "\n" : "")
           + "Added: " + summary.added + "\n"
           + "Updated: " + summary.updated + "\n"
           + "Kept current version: " + summary.kept + "\n"
@@ -3363,6 +3607,7 @@ Version 58:
 
         var text = textInput.value.trim();
         var label = rememberLabel("reminderNote", labelInput.value);
+        var owner = normaliseOwner(ownerInput.value);
         var date = dateInput.value;
         var time = timeInput.value;
 
@@ -3390,6 +3635,7 @@ Version 58:
                 groupId: reminder.groupId,
                 text: text,
                 label: label,
+                owner: owner,
                 date: addDaysToDateString(reminder.date, dateShift),
                 time: time,
                 archived: !!reminder.archived,
@@ -3405,6 +3651,7 @@ Version 58:
               groupId: reminder.groupId,
               text: text,
               label: label,
+              owner: owner,
               date: date,
               time: time,
               archived: !!reminder.archived,
@@ -3417,6 +3664,7 @@ Version 58:
             id: makeId(),
             text: text,
             label: label,
+            owner: owner,
             date: date,
             time: time,
             archived: false,
@@ -3465,6 +3713,7 @@ Version 58:
             groupId: groupId,
             text: original.text,
             label: normaliseLabel(original.label),
+            owner: reminderOwner(original),
             date: addDaysToDateString(original.date, i),
             time: original.time,
             archived: false,
@@ -3513,6 +3762,7 @@ Version 58:
           id: makeId(),
           text: original.text,
           label: normaliseLabel(original.label),
+          owner: reminderOwner(original),
           date: newDate,
           time: original.time,
           archived: false,
@@ -3666,6 +3916,18 @@ Version 58:
       }
 
       attachLabelFilter(reminderLabelFilter, "reminders", render);
+
+      if (ownerFilterList) {
+        ownerFilterList.addEventListener("change", function (event) {
+          var input = event.target;
+
+          if (!input || !input.hasAttribute("data-owner-filter")) return;
+
+          reminderOwnerFilters[input.value] = input.checked;
+          render();
+        });
+      }
+
       attachLabelFilter(noteLabelFilter, "notes", renderNotes);
       attachLabelFilter(qaLabelFilter, "qaCards", renderQaCards);
       attachLabelFilter(columnsLabelFilter, "columnCards", renderColumnCards);
@@ -3673,6 +3935,10 @@ Version 58:
       // =====================================================
       // Backup/import/export events
       // =====================================================
+
+      if (exportHandleInput) {
+        exportHandleInput.addEventListener("input", saveExportHandle);
+      }
 
       exportBtn.addEventListener("click", function () {
         var filename = backupFilename();
@@ -3761,7 +4027,11 @@ Version 58:
             var summary = applyImportedAppData(data);
             alert(importSummaryMessage(summary));
           } catch (error) {
-            alert("Could not import that backup file.");
+            if (error && error.message === "Import cancelled.") {
+              alert("Import cancelled.");
+            } else {
+              alert("Could not import that backup file.");
+            }
           } finally {
             importFile.value = "";
           }
@@ -3841,6 +4111,7 @@ Version 58:
           id: makeId(),
           text: note.text,
           label: rememberLabel("reminderNote", note.label),
+          owner: "Mine",
           date: transferDateInput.value,
           time: transferTimeInput.value,
           archived: false,
@@ -4404,6 +4675,7 @@ Version 58:
       });
 
       attachAllSectionTitleEditors();
+      loadExportHandle();
 
       load();
       if (shouldOpenRemindersOnStartup()) {
